@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+node scripts/check-public.mjs
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --pre-commit --staged --redact=100 --no-banner
+fi

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="artex-session" content="__ARTEX_SESSION__">
+  <title>ARTEX 连接管理</title>
+  <link rel="stylesheet" href="style.css"><link rel="stylesheet" href="native.css"><script src="reconnect.js" defer></script><script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <header><div><span class="eyebrow">MAGPIE × ARTEX</span><h1>ARTEX 连接设置</h1><p>首次授权并接入后，直接在 ARTEX 中选择 Magpie 的模型。</p></div><button id="add" class="primary" type="button">添加实例</button></header>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section aria-labelledby="instances-heading"><div class="section-heading"><h2 id="instances-heading">已连接实例</h2><button id="refresh" type="button">刷新状态</button></div><div id="instances"><p class="empty">正在读取连接…</p></div></section>
+  <section id="editor" aria-labelledby="editor-heading" hidden>
+    <div class="section-heading"><h2 id="editor-heading">添加 ARTEX 实例</h2><button id="cancel" type="button">取消</button></div>
+    <form id="connection">
+      <div class="grid">
+        <label>运行环境<select id="environment" name="environment"><option value="wsl">WSL</option><option value="local">本机 / 同一系统</option></select></label>
+        <label id="distro-field">WSL 发行版<input id="wsl_distro" name="wsl_distro" list="distros" placeholder="例如 Ubuntu-24.04" maxlength="120"><datalist id="distros"></datalist><span class="hint" id="wsl-hint">读取正在运行的 WSL 发行版…</span></label>
+        <label class="wide">ARTEX 地址<input id="url" name="url" type="url" value="http://localhost:8787" required placeholder="http://localhost:8787"><span class="hint">填写 Windows 实际可访问的地址，localhost 会原样保留。</span></label>
+        <label>用户名<input id="username" name="username" value="ARTEX" autocomplete="username" required></label>
+        <label>登录方式<select id="auth_method" name="auth_method"><option value="password">管理员密码（自动续期）</option><option value="token">JWT（过期后重新填写）</option></select></label>
+        <label id="password-field" class="wide">管理员密码<input id="password" name="password" type="password" autocomplete="current-password"><span class="hint credential-hint">密码只保存在本机的插件配置中。</span></label>
+        <label id="token-field" class="wide" hidden>ARTEX JWT<input id="token" name="token" type="password" autocomplete="off"><span class="hint credential-hint">JWT 过期后，请在此处更新。</span></label>
+        <label id="store-field" class="checkbox wide"><input id="store_password" name="store_password" type="checkbox" checked>保存密码以便登录自动续期</label>
+      </div>
+      <details><summary>高级设置</summary><div class="grid advanced">
+        <label>专用 LLM 配置名称<input id="profile_name" name="profile_name" maxlength="120" placeholder="自动生成"></label>
+        <label>API 格式<select id="format" name="format"><option value="auto">自动识别</option><option value="openai">OpenAI Chat Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label>
+        <label class="wide">从 ARTEX 访问 Magpie 的网关地址<input id="gateway_url" name="gateway_url" type="url" placeholder="留空：自动识别 WSL NAT / mirrored 网络"></label>
+        <label class="wide">自定义网关密钥文件<input id="gateway_key_file" name="gateway_key_file" placeholder="留空：使用 Magpie 的现有密钥"><span class="hint">文件位于运行 Magpie 的系统中。</span></label>
+      </div></details>
+      <div class="form-actions"><button id="save" type="button" class="primary">保存并验证登录</button><button id="check" type="button">检查服务与网络</button><span id="form-status" role="status"></span></div>
+    </form>
+  </section>
+  <footer>ARTEX 服务需已启动并完成管理员初始化。此插件管理 LLM 连接和模型切换，任务操作继续使用 ARTEX。</footer>
+</main>
+</body>
+</html>

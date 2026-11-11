@@ -1,0 +1,1062 @@
+diff --git a/docs/subsystems/agent-wiring.md b/docs/subsystems/agent-wiring.md
+index de0b6f3..7a0b996 100644
+--- a/docs/subsystems/agent-wiring.md
++++ b/docs/subsystems/agent-wiring.md
+@@ -8,6 +8,29 @@ supported agent: where its config lives, which fields matter and which
+ values to offer. It also records what magpie set, so a later change made by
+ something else shows up as drift.
+ 
++## Plugin client inventories (community compatibility extension)
++
++A package may declare `magpie.agentInstances` as the home-relative path of
++a plugin-owned JSON inventory. Version 1 contains `includeBase` (default
++true), optional `baseName`, and `instances`: `{id, name, config, dir}`.
++Config and directory paths relative to the inventory are resolved there.
++Each client reuses the module's connect hook, format and model keys, but
++gets its own model visibility, gateway identity, stash and native Agent row.
++No additional plugin entry or generated module is installed. Startup and
++Library paths are not cloned. Duplicate IDs/config paths and malformed or
++oversized inventories are refused. Inventory timestamps participate in
++the existing agent reload stamp.
++
++For splitting an existing shared client, `inherit: true` imports the base
++row's visibility and a matching copied bridge once. A separate stash marker
++prevents a later disconnect from importing it again. Existing target model
++filters, including an empty picked list, take precedence. UnwirePlugin
++restores every client and any leftover stash of the package. Disconnect
++previews copy the inventory too, resolve relative paths under the copied
++home, and relocate absolute home paths; inventories outside home have no
++preview. Tests: `TestPluginInstancesInheritOnceAndDisconnectIndependently`,
++`TestPluginInstancePreviewUsesOnlyCopiedFiles`, `TestInstanceInventory*`.
++
+ ## Responsibilities and sources of truth
+ 
+ | Part | Responsibility | Source |
+diff --git a/docs/subsystems/plugin-runtime.md b/docs/subsystems/plugin-runtime.md
+index 00646a2..0758d6b 100644
+--- a/docs/subsystems/plugin-runtime.md
++++ b/docs/subsystems/plugin-runtime.md
+@@ -278,6 +278,25 @@ still means off; a page is its own plugin's to turn on and off.
+ 
+ ## P5: panels in magpie's own pages, and pages that replace one
+ 
++A panel may use `slot: "agent"` and `agent: "<native id>"` to draw inside
++that agent's expanded Details, including before it is connected. The frame
++receives `context.agent: {id, name}` and keeps the existing sandbox and
++theme bridge. Only the named agent sees it. The `agent` value is required,
++trimmed, and at most 64 bytes. The native Settings row supplies the heading
++and background, so detail panels have no extra card or package heading.
++The Details integration loads on demand from `agentpanel.js`, and a failed
++panel's card from `pluginpanel.js`; the core retains the synchronous frame
++creation, message registry, sandbox permissions and timeouts.
++
++A panel targeting the base agent of a package also follows the clients its
++`magpie.agentInstances` inventory declares. The server emits one exact
++target per client, using the same package's sandboxed page; the frame gets
++the actual client ID, so its settings can be scoped independently. Another
++plugin with a similar ID does not receive the panel. Client inventories
++and one-time migration are described in [agent-wiring.md](agent-wiring.md).
++Tests: `TestAgentPanelFollowsClientsFromTheSamePlugin` and the agent instance
++wiring and preview tests.
++
+ P5 lets a community plugin into the pages magpie draws itself, not only a
+ page of its own. Both come from package.json and are read by
+ `plugin.Window` ([`page.go`](../../internal/plugin/page.go)); neither
+@@ -285,7 +304,7 @@ starts a Bun host.
+ 
+ - **Panels.** `magpie.panels: [{slot, file, title}]`, at most 8 a plugin
+   (`maxPanels`), each `slot` one of `plugin.PanelSlots`: `agents` (the end
+-  of the Agents page), `usage` (the end of Usage's Overview), `settings` (a
++  of the Agents page), `agent` (the named agent's Details), `usage` (the end of Usage's Overview), `settings` (a
+   Plugins tab in Settings, shown only while a panel is in it, in the tab
+   strip and in the sidebar of a wide window) and `provider` (each saved
+   provider's editor, told `{provider: {id, name}}`). `file` is an .html in
+diff --git a/internal/agent/plugged.go b/internal/agent/plugged.go
+index 9aa2fdb..a01bb08 100644
+--- a/internal/agent/plugged.go
++++ b/internal/agent/plugged.go
+@@ -14,6 +14,7 @@ package agent
+ import (
+ 	"encoding/json"
+ 	"fmt"
++	"log"
+ 	"os"
+ 	"path/filepath"
+ 	"slices"
+@@ -287,6 +288,9 @@ func plugged(home string, p *agentplug.Agent) *Agent {
+ 	id := d.ID
+ 	f := pluggedFile{pluggedPath(home, d.Config), d.Format}
+ 	key := "plugin:" + id + ":" + f.path
++	if err := inheritPluginInstance(home, p, f, key); err != nil {
++		log.Printf("agent instance %s couldn't import its connection: %v", id, err)
++	}
+ 	at := here(home)
+ 	saved := func() (pluggedStash, bool) {
+ 		var st pluggedStash
+diff --git a/internal/agent/plugged_gone.go b/internal/agent/plugged_gone.go
+index dd6c705..89e4601 100644
+--- a/internal/agent/plugged_gone.go
++++ b/internal/agent/plugged_gone.go
+@@ -35,27 +35,27 @@ func init() {
+ // the plugin's is put back from the stash alone. An agent not on magpie is
+ // left as it is.
+ func UnwirePlugin(spec string) error {
+-	var a *Agent
++	var errs error
++	found := false
+ 	for _, x := range All() {
+ 		if x.Plugin == spec {
+-			a = x
+-			break
++			found = true
++			if x.Wired() {
++				if err := x.Disconnect(); err != nil {
++					errs = errors.Join(errs, fmt.Errorf("%s: %w", x.Name, err))
++				}
++			}
+ 		}
+ 	}
+-	if a == nil {
+-		a = pluggedOff(spec)
+-	}
+-	if a != nil {
+-		if !a.Wired() {
+-			return nil
++	if !found {
++		if a := pluggedOff(spec); a != nil && a.Wired() {
++			if err := a.Disconnect(); err != nil {
++				errs = errors.Join(errs, fmt.Errorf("%s: %w", a.Name, err))
++			}
+ 		}
+-		if err := a.Disconnect(); err != nil {
+-			return fmt.Errorf("%s: %w", a.Name, err)
+-		}
+-		return nil
+ 	}
+ 	_, _, err := restoreLeft(func(_ string, st pluggedStash) bool { return st.Spec == spec })
+-	return err
++	return errors.Join(errs, err)
+ }
+ 
+ // pluggedOff is the agent of a plugin that isn't listed (switched off, or
+diff --git a/internal/agent/plugged_instances.go b/internal/agent/plugged_instances.go
+new file mode 100644
+index 0000000..77b633d
+--- /dev/null
++++ b/internal/agent/plugged_instances.go
+@@ -0,0 +1,113 @@
++package agent
++
++import (
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++
++	"github.com/yetone/magpie/internal/agentplug"
++	"github.com/yetone/magpie/internal/plugin"
++	"github.com/yetone/magpie/internal/settings"
++)
++
++// inheritPluginInstance adopts a copied shared bridge once. The marker is
++// separate from its wiring stash, so disconnecting cannot import it again.
++func inheritPluginInstance(home string, p *agentplug.Agent, f pluggedFile, key string) error {
++	if !p.Inherit {
++		return nil
++	}
++	marker := "plugin-instance:" + p.Desc.ID + ":" + f.path
++	stashMu.Lock()
++	defer stashMu.Unlock()
++	m := stashLoad()
++	if m[marker] != "" {
++		return nil
++	}
++	if err := settings.CopyAgentVisibility(p.BaseID, p.Desc.ID); err != nil {
++		return err
++	}
++	baseKey := "plugin:" + p.BaseID + ":" + pluggedPath(home, p.BaseConfig)
++	var old pluggedStash
++	if m[key] == "" && json.Unmarshal([]byte(m[baseKey]), &old) == nil && old.Spec == p.Spec && f.wired(p.Desc.ID, old) {
++		model, _ := f.get(p.Desc.Model)
++		if model == p.Desc.Prefix+old.Ref {
++			for k := range old.Had {
++				old.Had[k] = "\x00"
++			}
++			b, _ := json.Marshal(old)
++			m[key] = string(b)
++			// The copied bridge belongs to Magpie, rather than a provider a
++			// user named magpie by hand. Its own pre-connection file was empty.
++			m[p.Desc.ID+".connect.was"] = "{}"
++		}
++	}
++	m[marker] = p.BaseID
++	return stashWrite(m)
++}
++
++// A client's bridge is nested below the inventory, which copyTop doesn't
++// include. Give the dry run its own inventory, with every absolute home path
++// relocated. Its shared plugin package and the real bridges stay read-only.
++func copyPluginInventoryForPreview(a *Agent, home, tmp string) error {
++	if a.Plugin == "" {
++		return nil
++	}
++	raw := plugin.AgentInstances(plugin.Target(a.Plugin))
++	if raw == "" {
++		return nil
++	}
++	if !strings.HasPrefix(raw, "~/") && !strings.Contains(raw, "$HOME") {
++		return errors.New("no preview for a plugin with an absolute agent inventory")
++	}
++	file := pluggedPath(home, raw)
++	rel, err := filepath.Rel(home, file)
++	if err != nil || strings.HasPrefix(rel, "..") {
++		return errors.New("the agent inventory is outside home")
++	}
++	b, err := os.ReadFile(file)
++	if errors.Is(err, os.ErrNotExist) {
++		return nil
++	}
++	if err != nil {
++		return err
++	}
++	var data map[string]json.RawMessage
++	if err := json.Unmarshal(b, &data); err != nil {
++		return err
++	}
++	var rows []map[string]json.RawMessage
++	if err := json.Unmarshal(data["instances"], &rows); err != nil {
++		return err
++	}
++	for _, row := range rows {
++		for _, key := range []string{"config", "dir"} {
++			var value string
++			if len(row[key]) == 0 {
++				continue
++			}
++			if err := json.Unmarshal(row[key], &value); err != nil {
++				return err
++			}
++			if !filepath.IsAbs(value) {
++				continue
++			}
++			moved := movedKey(value, home, tmp)
++			if moved == value {
++				return errors.New("the agent inventory contains a path outside home")
++			}
++			row[key], _ = json.Marshal(moved)
++		}
++	}
++	data["instances"], _ = json.Marshal(rows)
++	b, err = json.Marshal(data)
++	if err != nil {
++		return err
++	}
++	dest := filepath.Join(tmp, rel)
++	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
++		return err
++	}
++	return os.WriteFile(dest, b, 0o600)
++}
+diff --git a/internal/agent/plugged_instances_test.go b/internal/agent/plugged_instances_test.go
+new file mode 100644
+index 0000000..fcce899
+--- /dev/null
++++ b/internal/agent/plugged_instances_test.go
+@@ -0,0 +1,147 @@
++package agent
++
++import (
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/yetone/magpie/internal/agentplug"
++	"github.com/yetone/magpie/internal/edit"
++	"github.com/yetone/magpie/internal/gateway"
++	"github.com/yetone/magpie/internal/settings"
++)
++
++func TestPluginInstancesInheritOnceAndDisconnectIndependently(t *testing.T) {
++	home := pluggedHome(t, `export const agent={id:"clients",name:"Clients",dir:"~/",config:"~/.clients.json",model:"model"};
++export function connect({gateway,models}) { return {api_key:gateway.key,base_url:gateway.v1,models}; }`)
++	base, err := Find("clients")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := settings.Save(settings.Settings{PickedModels: map[string][]string{"clients": {"deepseek/pro"}}}); err != nil {
++		t.Fatal(err)
++	}
++	if err := base.Pick("model", "magpie/deepseek/pro"); err != nil {
++		t.Fatal(err)
++	}
++	basePath, childPath := filepath.Join(home, ".clients.json"), filepath.Join(home, ".clients-wsl.json")
++	b, _ := os.ReadFile(basePath)
++	if err := os.WriteFile(childPath, b, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	inventory := filepath.Join(home, "clients-inventory.json")
++	writeInventory := func(include bool) {
++		t.Helper()
++		data, _ := json.Marshal(map[string]any{"version": 1, "includeBase": include, "instances": []any{map[string]any{"id": "clients-wsl", "name": "Clients WSL", "config": childPath, "dir": home, "inherit": true}}})
++		if err := os.WriteFile(inventory, data, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		agentplug.Reload()
++	}
++	pkg, _ := json.Marshal(map[string]any{"name": "pa", "magpie": map[string]any{"agent": "./agent.js", "agentInstances": inventory}})
++	if err := os.WriteFile(filepath.Join(home, "plugins", "pa", "package.json"), pkg, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	writeInventory(false)
++	child, err := Find("clients-wsl")
++	if err != nil {
++		t.Fatalf("one installed plugin did not expose its WSL client: %v", err)
++	}
++	if !child.Wired() || child.Field("model").Get() != "magpie/deepseek/pro" {
++		t.Fatalf("existing shared connection was lost during client migration: wired=%v model=%q base=%v child=%v", child.Wired(), child.Field("model").Get(), base.Wired(), len(stashLoad()))
++	}
++	if got := settings.Load().PickedModels["clients-wsl"]; len(got) != 1 || got[0] != "deepseek/pro" {
++		t.Fatalf("visible models were reset: %v", got)
++	}
++	if err := child.Sync(); err != nil {
++		t.Fatal(err)
++	}
++	if key, _ := edit.GetJSON(childPath, "api_key"); key != gateway.TokenFor("clients-wsl") {
++		t.Fatal("WSL client did not get its own gateway identity")
++	}
++	if key, _ := edit.GetJSON(basePath, "api_key"); key != gateway.TokenFor("clients") {
++		t.Fatal("WSL sync changed the local client")
++	}
++	if err := child.Disconnect(); err != nil {
++		t.Fatal(err)
++	}
++	child, err = Find("clients-wsl")
++	if err != nil || child.Wired() {
++		t.Fatal("disconnect imported the shared connection again")
++	}
++	if !base.Wired() {
++		t.Fatal("disconnecting WSL disconnected the local client")
++	}
++	writeInventory(true)
++	child, err = Find("clients-wsl")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := child.Pick("model", "magpie/deepseek/pro"); err != nil {
++		t.Fatal(err)
++	}
++	if err := UnwirePlugin(base.Plugin); err != nil {
++		t.Fatal(err)
++	}
++	if base.Wired() || child.Wired() {
++		t.Fatal("removing the one plugin left one of its clients wired")
++	}
++}
++
++func TestPluginInstancePreviewUsesOnlyCopiedFiles(t *testing.T) {
++	home := pluggedHome(t, `export const agent={id:"clients",config:"~/.clients/main.json",model:"model"};
++export function connect({gateway}) { return {api_key:gateway.key}; }`)
++	file := filepath.Join(home, ".clients", "instances", "wsl", "agent.json")
++	os.MkdirAll(filepath.Dir(file), 0o700)
++	os.WriteFile(file, []byte(`{"keep":true}`), 0o600)
++	inventory := filepath.Join(home, ".clients", "agents.json")
++	os.WriteFile(inventory, []byte(`{"version":1,"includeBase":false,"instances":[{"id":"clients-wsl","config":"instances/wsl/agent.json","dir":"instances/wsl"}]}`), 0o600)
++	os.WriteFile(filepath.Join(home, "plugins", "pa", "package.json"), []byte(`{"name":"pa","magpie":{"agent":"./agent.js","agentInstances":"~/.clients/agents.json"}}`), 0o600)
++	agentplug.Reload()
++	a, err := Find("clients-wsl")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := a.Pick("model", "magpie/deepseek/pro"); err != nil {
++		t.Fatal(err)
++	}
++	before, _ := os.ReadFile(file)
++	tmp := t.TempDir()
++	rel, _ := filepath.Rel(home, filepath.Dir(file))
++	if err := copyTop(filepath.Dir(file), filepath.Join(tmp, rel), nil, false); err != nil {
++		t.Fatal(err)
++	}
++	cfgRel, _ := filepath.Rel(home, settings.Dir())
++	if err := copyTop(settings.Dir(), filepath.Join(tmp, cfgRel), nil, true); err != nil {
++		t.Fatal(err)
++	}
++	if err := copyPluginInventoryForPreview(a, home, tmp); err != nil {
++		t.Fatal(err)
++	}
++	stashRel, _ := filepath.Rel(home, stashPath())
++	if err := moveStashKeys(filepath.Join(tmp, stashRel), home, tmp); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("HOME", tmp)
++	t.Setenv("USERPROFILE", tmp)
++	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
++	agentplug.Reload()
++	preview, err := Find("clients-wsl")
++	if err != nil {
++		t.Fatalf("the copied inventory lost the native client: %v", err)
++	}
++	if preview.Path == file || !preview.Wired() {
++		t.Fatal("disconnect preview did not use its own connected bridge")
++	}
++	if err := preview.Disconnect(); err != nil {
++		t.Fatal(err)
++	}
++	after, _ := os.ReadFile(file)
++	if string(after) != string(before) {
++		t.Fatal("preview changed the original client")
++	}
++	if model, _ := edit.GetJSON(preview.Path, "model"); model != "" {
++		t.Fatal("preview did not restore its copied client")
++	}
++}
+diff --git a/internal/agent/preview.go b/internal/agent/preview.go
+index 9292d3e..f1e46f1 100644
+--- a/internal/agent/preview.go
++++ b/internal/agent/preview.go
+@@ -142,6 +142,9 @@ func DisconnectPreview(a *Agent, exe string) ([]FileChange, error) {
+ 	if err := copyTop(cfg, filepath.Join(tmp, cfgRel), nil, true); err != nil {
+ 		return nil, err
+ 	}
++	if err := copyPluginInventoryForPreview(a, home, tmp); err != nil {
++		return nil, err
++	}
+ 	// the stash's keys that name a file by its whole path (a plugin's
+ 	// agent's, AtomCode's, Droid's…) name it under the copy's home, where
+ 	// the dry run finds the file: with home's own they were never found
+diff --git a/internal/agentplug/agentplug.go b/internal/agentplug/agentplug.go
+index a5b44f6..629ba20 100644
+--- a/internal/agentplug/agentplug.go
++++ b/internal/agentplug/agentplug.go
+@@ -145,6 +145,10 @@ type Agent struct {
+ 	Spec string // the plugin's spec in plugins.json
+ 	File string
+ 	Desc Desc
++	// BaseID groups clients from one module for its Details panel. Inherit
++	// imports an existing base connection once when a plugin splits clients.
++	BaseID, BaseConfig string
++	Inherit            bool
+ 
+ 	mu      sync.Mutex
+ 	rt      *moejs.Runtime
+@@ -212,8 +216,9 @@ func current() *set {
+ }
+ 
+ type found struct {
+-	e    plugin.Entry
+-	file string
++	e         plugin.Entry
++	file      string
++	instances string
+ }
+ 
+ func modules() []found {
+@@ -223,7 +228,7 @@ func modules() []found {
+ 			continue
+ 		}
+ 		if file, _ := plugin.Agent(plugin.Target(e.Spec)); file != "" {
+-			out = append(out, found{e, file})
++			out = append(out, found{e: e, file: file, instances: instancePath(plugin.AgentInstances(plugin.Target(e.Spec)))})
+ 		}
+ 	}
+ 	return out
+@@ -237,6 +242,12 @@ func stamp() string {
+ 		if fi, err := os.Stat(f.file); err == nil {
+ 			fmt.Fprint(&b, ":", fi.ModTime().UnixNano(), ":", fi.Size())
+ 		}
++		if f.instances != "" {
++			b.WriteString("|" + f.instances)
++			if fi, err := os.Stat(f.instances); err == nil {
++				fmt.Fprint(&b, ":", fi.ModTime().UnixNano(), ":", fi.Size())
++			}
++		}
+ 	}
+ 	return b.String()
+ }
+@@ -245,17 +256,20 @@ func load(st string) *set {
+ 	s := &set{stamp: st, errs: map[string]string{}}
+ 	seen := map[string]string{}
+ 	for _, f := range modules() {
+-		a, err := Compile(f.e.Spec, f.file)
+-		if err == nil && seen[a.Desc.ID] != "" {
+-			err = fmt.Errorf("agent id %q is %s's too", a.Desc.ID, plugin.Name(seen[a.Desc.ID]))
+-		}
++		list, err := compileInstances(f.e.Spec, f.file, f.instances)
+ 		if err != nil {
+ 			s.errs[f.e.Spec] = err.Error()
+ 			log.Printf("agent plugin %s didn't load: %v", plugin.Name(f.e.Spec), err)
+ 			continue
+ 		}
+-		seen[a.Desc.ID] = f.e.Spec
+-		s.list = append(s.list, a)
++		for _, a := range list {
++			if seen[a.Desc.ID] != "" {
++				s.errs[f.e.Spec] = fmt.Sprintf("agent id %q is %s's too", a.Desc.ID, plugin.Name(seen[a.Desc.ID]))
++				continue
++			}
++			seen[a.Desc.ID] = f.e.Spec
++			s.list = append(s.list, a)
++		}
+ 	}
+ 	return s
+ }
+diff --git a/internal/agentplug/instances.go b/internal/agentplug/instances.go
+new file mode 100644
+index 0000000..a60a559
+--- /dev/null
++++ b/internal/agentplug/instances.go
+@@ -0,0 +1,105 @@
++package agentplug
++
++import (
++	"encoding/json"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++)
++
++// instanceInventory contains public locations only, never client credentials.
++// An instance inherits its module's hooks, format and model keys; only its
++// identity and local bridge location differ. It is not an installed plugin.
++type instanceInventory struct {
++	Version     int    `json:"version"`
++	IncludeBase *bool  `json:"includeBase"`
++	BaseName    string `json:"baseName"`
++	Instances   []struct {
++		ID      string `json:"id"`
++		Name    string `json:"name"`
++		Config  string `json:"config"`
++		Dir     string `json:"dir"`
++		Inherit bool   `json:"inherit"`
++	} `json:"instances"`
++}
++
++func instancePath(p string) string {
++	if p == "" {
++		return ""
++	}
++	home, _ := os.UserHomeDir()
++	p = os.Expand(p, func(k string) string {
++		if k == "HOME" {
++			return home
++		}
++		return os.Getenv(k)
++	})
++	if p == "~" || strings.HasPrefix(p, "~/") {
++		p = filepath.Join(home, p[1:])
++	}
++	return filepath.Clean(p)
++}
++
++func compileInstances(spec, file, inventory string) ([]*Agent, error) {
++	base, err := Compile(spec, file)
++	if err != nil {
++		return nil, err
++	}
++	base.BaseID, base.BaseConfig = base.Desc.ID, base.Desc.Config
++	if inventory == "" {
++		return []*Agent{base}, nil
++	}
++	b, err := os.ReadFile(inventory)
++	if errors.Is(err, os.ErrNotExist) {
++		return []*Agent{base}, nil
++	}
++	if err != nil {
++		return nil, fmt.Errorf("agent instances: %w", err)
++	}
++	var in instanceInventory
++	if len(b) > 256*1024 || json.Unmarshal(b, &in) != nil || in.Version != 1 || len(in.Instances) > 128 {
++		return nil, errors.New("agent instances: expected a version 1 inventory with at most 128 clients")
++	}
++	if in.BaseName != "" {
++		base.Desc.Name = in.BaseName
++	}
++	var out []*Agent
++	if in.IncludeBase == nil || *in.IncludeBase {
++		out = append(out, base)
++	}
++	ids := map[string]bool{base.Desc.ID: true}
++	paths := map[string]bool{instancePath(base.Desc.Config): true}
++	for _, row := range in.Instances {
++		resolve := func(value string) string {
++			if value == "" {
++				return ""
++			}
++			expanded := instancePath(value)
++			if !filepath.IsAbs(expanded) {
++				return filepath.Join(filepath.Dir(inventory), expanded)
++			}
++			return expanded
++		}
++		config, dir := resolve(row.Config), resolve(row.Dir)
++		if ids[row.ID] || paths[config] || strings.TrimSpace(row.Config) == "" {
++			return nil, fmt.Errorf("agent instances: duplicate id or config for %q", row.ID)
++		}
++		child, err := Compile(spec, file)
++		if err != nil {
++			return nil, err
++		}
++		child.BaseID, child.BaseConfig, child.Inherit = base.Desc.ID, base.Desc.Config, row.Inherit
++		child.Desc.ID, child.Desc.Name, child.Desc.Config, child.Desc.Dir = row.ID, row.Name, config, dir
++		if err := child.Desc.check(); err != nil {
++			return nil, fmt.Errorf("agent instance: %w", err)
++		}
++		if child.Desc.Startup != nil || child.Desc.Library != (Places{}) {
++			return nil, errors.New("agent instances: separate startup or library paths are not supported")
++		}
++		ids[row.ID], paths[config] = true, true
++		out = append(out, child)
++	}
++	return out, nil
++}
+diff --git a/internal/agentplug/instances_test.go b/internal/agentplug/instances_test.go
+new file mode 100644
+index 0000000..ec89f04
+--- /dev/null
++++ b/internal/agentplug/instances_test.go
+@@ -0,0 +1,45 @@
++package agentplug
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestInstanceInventoryReusesHooksWithSeparateIdentity(t *testing.T) {
++	dir := t.TempDir()
++	file, inventory := filepath.Join(dir, "agent.js"), filepath.Join(dir, "clients.json")
++	os.WriteFile(file, []byte(`export const agent={id:"clients",config:"~/.clients/main.json",model:"model"};
++export function connect({agent}) { return {identity:agent.id, location:agent.config}; }`), 0o600)
++	os.WriteFile(inventory, []byte(`{"version":1,"includeBase":false,"instances":[{"id":"clients-wsl","name":"Client WSL","config":"~/.clients/wsl.json","dir":"~/.clients"}]}`), 0o600)
++	list, err := compileInstances(dir, file, inventory)
++	if err != nil || len(list) != 1 {
++		t.Fatalf("clients: %v %v", list, err)
++	}
++	a := list[0]
++	if a.BaseID != "clients" || a.Spec != dir || a.Desc.Name != "Client WSL" {
++		t.Fatalf("client metadata: %+v", a)
++	}
++	result, err := a.Connect(map[string]any{"agent": map[string]any{"id": a.Desc.ID, "config": a.Desc.Config}})
++	if err != nil || result["identity"] != "clients-wsl" || result["location"] != instancePath("~/.clients/wsl.json") {
++		t.Fatalf("client hook: %v %v", result, err)
++	}
++}
++
++func TestInstanceInventoryRejectsAmbiguousAndBrokenClients(t *testing.T) {
++	dir := t.TempDir()
++	file, inventory := filepath.Join(dir, "agent.js"), filepath.Join(dir, "clients.json")
++	os.WriteFile(file, []byte(`export const agent={id:"clients",config:"~/.clients.json",model:"model"};`), 0o600)
++	for _, data := range []string{
++		`{"version":1,"instances":[{"id":"clients","config":"~/.other.json"}]}`,
++		`{"version":1,"instances":[{"id":"child","config":"~/.clients.json"}]}`,
++		`{"version":1,"instances":[{"id":"INVALID","config":"~/.other.json"}]}`,
++		`{"version":2,"instances":[]}`,
++		`{`,
++	} {
++		os.WriteFile(inventory, []byte(data), 0o600)
++		if _, err := compileInstances(dir, file, inventory); err == nil {
++			t.Fatalf("accepted ambiguous inventory %s", data)
++		}
++	}
++}
+diff --git a/internal/gui/agentpanel_test.go b/internal/gui/agentpanel_test.go
+new file mode 100644
+index 0000000..547285c
+--- /dev/null
++++ b/internal/gui/agentpanel_test.go
+@@ -0,0 +1,45 @@
++package gui
++
++import (
++	"encoding/json"
++	"github.com/yetone/magpie/internal/agentplug"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestAgentPanelListsItsNativeAgentID(t *testing.T) {
++	on, _, _, _ := panelPlugins(t)
++	pkg := `{"name":"artex-details","magpie":{"panels":[{"slot":"agent","agent":"artex","title":"Connection","file":"ui/notes.html"}]}}`
++	if err := os.WriteFile(filepath.Join(on, "package.json"), []byte(pkg), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	w := do(pageMux(), httptest.NewRequest("GET", "/api/plugin-panels", nil))
++	var panels []pluginPanel
++	if err := json.Unmarshal(w.Body.Bytes(), &panels); err != nil || len(panels) != 1 {
++		t.Fatalf("panels: %s %v", w.Body, err)
++	}
++	if panels[0].Agent != "artex" || panels[0].Slot != "agent" {
++		t.Fatalf("native detail target lost: %+v", panels[0])
++	}
++}
++
++func TestAgentPanelFollowsClientsFromTheSamePlugin(t *testing.T) {
++	on, _, _, _ := panelPlugins(t)
++	inventory := filepath.Join(t.TempDir(), "clients.json")
++	os.WriteFile(inventory, []byte(`{"version":1,"instances":[{"id":"artex-wsl-example","name":"ARTEX WSL Example","config":"~/.artex-wsl.json"}]}`), 0o600)
++	pkg, _ := json.Marshal(map[string]any{"name": "artex-details", "magpie": map[string]any{"agent": "agent.js", "agentInstances": inventory, "panels": []any{map[string]any{"slot": "agent", "agent": "artex", "file": "ui/notes.html"}}}})
++	os.WriteFile(filepath.Join(on, "package.json"), pkg, 0o600)
++	os.WriteFile(filepath.Join(on, "agent.js"), []byte(`export const agent={id:"artex",config:"~/.artex.json",model:"model"};`), 0o600)
++	agentplug.Reload()
++	t.Cleanup(agentplug.Reload)
++	w := do(pageMux(), httptest.NewRequest("GET", "/api/plugin-panels", nil))
++	var panels []pluginPanel
++	if err := json.Unmarshal(w.Body.Bytes(), &panels); err != nil || len(panels) != 2 {
++		t.Fatalf("one plugin's client Details: %s %v", w.Body, err)
++	}
++	if panels[0].Agent != "artex" || panels[1].Agent != "artex-wsl-example" || panels[0].Spec != panels[1].Spec || panels[0].Key == panels[1].Key {
++		t.Fatalf("client panel targets: %+v", panels)
++	}
++}
+diff --git a/internal/gui/assets/agentpanel.js b/internal/gui/assets/agentpanel.js
+new file mode 100644
+index 0000000..34b672c
+--- /dev/null
++++ b/internal/gui/assets/agentpanel.js
+@@ -0,0 +1,14 @@
++// Native Details integration is loaded only when a plugin targets an agent.
++// Refresh its availability without replacing an open, unchanged form.
++let signature = "";
++export function load(panels) {
++  const agents = new Set(panels.filter((p) => p.slot === "agent").map((p) => p.agent));
++  const next = JSON.stringify([...agents].sort());
++  magpie.hasAgentPanel = (id) => agents.has(id);
++  magpie.agentSettings = (agent, kv) => {
++    if (agents.has(agent.id)) kv(t("Settings"), magpie.slot("agent", { agent: { id: agent.id, name: agent.name } }));
++  };
++  if (signature === next) return;
++  signature = next;
++  if (view === "agents" && typeof renderAgents === "function") renderAgents();
++}
+diff --git a/internal/gui/assets/app.css b/internal/gui/assets/app.css
+index cc51cfc..d72e052 100644
+--- a/internal/gui/assets/app.css
++++ b/internal/gui/assets/app.css
+@@ -3910,6 +3910,9 @@ body:not(.side-nav) #view-settings .set-head.stuck::before { box-shadow: 0 1px 0
+ .plugin-panel > .row-head .note { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+ .plugin-panel-body { border: 1px solid var(--line); border-radius: 10px; background: var(--card); overflow: hidden; }
+ .plugin-panel-frame { flex: none; min-height: 0; height: 48px; }
++.ag-v > .plugin-slot[data-slot="agent"] { margin: 0; }
++.plugin-slot[data-slot="agent"] > .plugin-panel > .row-head { display: none; }
++.plugin-slot[data-slot="agent"] .plugin-panel-body { border: 0; border-radius: 0; background: transparent; }
+ .plugin-panel-broke { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 14px; }
+ .plugin-panel-broke .note { flex: 1 1 200px; color: var(--muted); overflow-wrap: anywhere; }
+ /* a built-in page a plugin's page replaces steps aside in the sidebar */
+diff --git a/internal/gui/assets/app.js b/internal/gui/assets/app.js
+index d52f2a8..589233f 100644
+--- a/internal/gui/assets/app.js
++++ b/internal/gui/assets/app.js
+@@ -1551,7 +1551,7 @@ function connectRow(a, row, who, { fields, extras, fieldBtn, sw, kind }) {
+   const start = kind === "ok" && !listsMenu(a) ? startField(a) : null;
+   if (start) fields.querySelector(`:scope > [data-key="${CSS.escape(start.key)}"]`)?.remove();
+   if (kind === "ok") {
+-    if (a.wired) {
++    if (a.wired || magpie.hasAgentPanel?.(a.id)) {
+       // a click on the row off its controls opens it, as on the Mac (NG_shiyu)
+       const link = expandLink(a);
+       row.append(link);
+@@ -1588,7 +1588,7 @@ function connectRow(a, row, who, { fields, extras, fieldBtn, sw, kind }) {
+     b.classList.add("ag-start");
+     row.append(b, el("span", "ag-conn-gap"));
+   } else row.append(el("span", "ag-cant", t("Can't connect")));
+-  if (kind === "ok" && a.wired && agentExpanded === a.id) {
++  if (kind === "ok" && (a.wired || magpie.hasAgentPanel?.(a.id)) && agentExpanded === a.id) {
+     row.classList.add("expanded");
+     row.append(connectPanel(a, { fields: fields.querySelector(".field") ? fields : null, extras, fieldBtn }));
+   }
+@@ -2294,6 +2294,8 @@ function connectPanel(a, { fields, fieldBtn }) {
+       loadSettings().then(() => { list.hidden = false; }, statusErr);
+     }
+   }
++  magpie.agentSettings?.(a, kv);
++  if (!a.wired) return box;
+   if (a.launch) {
+     const cp = el("button", "ag-quiet", t("Copy"));
+     cp.type = "button";
+diff --git a/internal/gui/assets/pluginpages.js b/internal/gui/assets/pluginpages.js
+index 6bdbcf7..92e8ffc 100644
+--- a/internal/gui/assets/pluginpages.js
++++ b/internal/gui/assets/pluginpages.js
+@@ -310,19 +310,12 @@
+   // how tall a panel can be, so one that says it is endless isn't
+   const PANEL_MAX = 2400;
+ 
+-  function panelBroke(p, why) {
++  async function panelBroke(p, why) {
+     if (p.broken) return;
+     p.broken = true;
+     clearTimeout(p.timer);
+     panels.delete(p.frame);
+-    const card = el("div", "plugin-panel-broke");
+-    card.setAttribute("role", "alert");
+-    card.append(el("b", "", t("{name} stopped working", { name: titled(p.entry) })), el("span", "note", why));
+-    const again = el("button", "text", t("Try again"));
+-    again.type = "button";
+-    again.onclick = () => panelFrame(p.entry, p.context, p.body);
+-    card.append(again);
+-    p.body.replaceChildren(card);
++    (await import("./pluginpanel.js")).showError(p.body, titled(p.entry), why, () => panelFrame(p.entry, p.context, p.body));
+     console.error(`[magpie] ${p.entry.name}: panel ${p.entry.key}: ${why}`);
+   }
+ 
+@@ -345,11 +338,12 @@
+   // changed, so a panel already open goes on as it is
+   function fill(box) {
+     const name = box.dataset.slot;
+-    const list = panelList.filter((e) => e.slot === name);
++    const context = box.pluginContext || {};
++    const list = panelList.filter((e) => e.slot === name
++      && (name !== "agent" || e.agent === context.agent?.id));
+     const sig = list.map((e) => e.key + " " + e.url + " " + titled(e)).join("|");
+     if (box.dataset.sig === sig && box.childElementCount === list.length) return;
+     box.dataset.sig = sig;
+-    const context = box.pluginContext || {};
+     const parts = list.map((e) => {
+       const sec = el("section", "plugin-panel");
+       sec.dataset.panel = e.key;
+@@ -389,6 +383,7 @@
+     // an answer that isn't a list is not known: the panels drawn stay
+     if (!Array.isArray(list)) return;
+     panelList = list;
++    if (magpie.hasAgentPanel || list.some((e) => e.slot === "agent")) (await import("./agentpanel.js")).load(list);
+     for (const box of document.querySelectorAll(".plugin-slot[data-slot]")) fill(box);
+   }
+ 
+diff --git a/internal/gui/assets/pluginpanel.js b/internal/gui/assets/pluginpanel.js
+new file mode 100644
+index 0000000..97fd47c
+--- /dev/null
++++ b/internal/gui/assets/pluginpanel.js
+@@ -0,0 +1,11 @@
++// A failed panel recovers in its own place; the page around it goes on.
++export function showError(body, name, why, retry) {
++  const card = el("div", "plugin-panel-broke");
++  card.setAttribute("role", "alert");
++  card.append(el("b", "", t("{name} stopped working", { name })), el("span", "note", why));
++  const again = el("button", "text", t("Try again"));
++  again.type = "button";
++  again.onclick = retry;
++  card.append(again);
++  body.replaceChildren(card);
++}
+diff --git a/internal/gui/pluginpage.go b/internal/gui/pluginpage.go
+index ba554f5..8bcf0c7 100644
+--- a/internal/gui/pluginpage.go
++++ b/internal/gui/pluginpage.go
+@@ -21,6 +21,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	"github.com/yetone/magpie/internal/agentplug"
+ 	"github.com/yetone/magpie/internal/plugin"
+ 	"github.com/yetone/magpie/internal/provider"
+ 	"github.com/yetone/magpie/internal/usage"
+@@ -109,9 +110,10 @@ type pluginAction struct {
+ // pages (plugin.PanelSlots).
+ type pluginPanel struct {
+ 	Spec   string            `json:"spec"`
+-	Name   string            `json:"name"`  // its package's
+-	Key    string            `json:"key"`   // the panel's, among every plugin's
+-	Slot   string            `json:"slot"`  // the page it is in
++	Name   string            `json:"name"` // its package's
++	Key    string            `json:"key"`  // the panel's, among every plugin's
++	Slot   string            `json:"slot"` // the page it is in
++	Agent  string            `json:"agent,omitempty"`
+ 	Title  string            `json:"title"` // the panel's, or the package's magpie.name or short name
+ 	Titles map[string]string `json:"titles,omitempty"`
+ 	URL    string            `json:"url"`   // the panel, under pluginPagePrefix
+@@ -186,12 +188,24 @@ func windowParts() (pages []pluginPage, panels []pluginPanel) {
+ 		for i, spec := range w.Panels {
+ 			tok := pageToken(e.Spec + "\x00panel\x00" + strconv.Itoa(i))
+ 			rel, _ := filepath.Rel(spec.Dir, spec.File)
+-			p := pluginPanel{Spec: e.Spec, Name: name, Key: fmt.Sprintf("%s-%d", key, i), Slot: spec.Slot, Title: spec.Title, Titles: spec.Titles, Reads: reads,
++			p := pluginPanel{Spec: e.Spec, Name: name, Key: fmt.Sprintf("%s-%d", key, i), Slot: spec.Slot, Agent: spec.Agent, Title: spec.Title, Titles: spec.Titles, Reads: reads,
+ 				token: tok, dir: spec.Dir, URL: pluginPagePrefix + tok + "/" + filepath.ToSlash(rel), file: filepath.ToSlash(rel), hosted: !only}
+ 			if p.Title == "" {
+ 				p.Title = cmp.Or(plugin.InstalledName(e.Spec), plugin.ShortName(name))
+ 			}
+ 			panels = append(panels, p)
++			if p.Slot == "agent" {
++				agents, _ := agentplug.List()
++				for _, a := range agents {
++					if a.Spec != e.Spec || a.BaseID != p.Agent || a.Desc.ID == p.Agent {
++						continue
++					}
++					child := p
++					child.Agent = a.Desc.ID
++					child.Key += "-" + a.Desc.ID
++					panels = append(panels, child)
++				}
++			}
+ 		}
+ 	}
+ 	return pages, panels
+diff --git a/internal/gui/tests/plugin-panels.test.cjs b/internal/gui/tests/plugin-panels.test.cjs
+index 2c93513..94adf68 100644
+--- a/internal/gui/tests/plugin-panels.test.cjs
++++ b/internal/gui/tests/plugin-panels.test.cjs
+@@ -203,7 +203,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
+         // drawn when the window opened, before the note was written
+         await sets.locator("#count").filter({ hasText: /^\d+ notes?$/ }).waitFor();
+         await page.waitForTimeout(1100); // options are set once a second at most
++        const cleared = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/plugin-pages/options"
++          && r.request().postDataJSON()?.options?.notes && Object.keys(r.request().postDataJSON().options.notes).length === 0);
+         await sets.locator("#clear").click();
++        await cleared;
+         await sets.locator("#count").filter({ hasText: "0 notes" }).waitFor();
+         assert.deepEqual(seen.options.at(-1).options.notes, {}, `${where}: cleared`);
+         assert.ok(await page.locator("#setPage-plugins").isVisible(), where);
+diff --git a/internal/plugin/agent.go b/internal/plugin/agent.go
+index 07cf78a..2ac02ce 100644
+--- a/internal/plugin/agent.go
++++ b/internal/plugin/agent.go
+@@ -41,6 +41,24 @@ func Agent(target string) (file string, only bool) {
+ 	return file, pkg.Main == "" && len(pkg.Exports) == 0
+ }
+ 
++// AgentInstances is a plugin-owned JSON inventory of clients using its agent
++// module. The inventory lives in user data, so installed packages stay read-only.
++func AgentInstances(target string) string {
++	b, err := os.ReadFile(filepath.Join(target, "package.json"))
++	if err != nil {
++		return ""
++	}
++	var pkg struct {
++		Magpie struct {
++			Instances string `json:"agentInstances"`
++		} `json:"magpie"`
++	}
++	if json.Unmarshal(b, &pkg) != nil {
++		return ""
++	}
++	return strings.TrimSpace(pkg.Magpie.Instances)
++}
++
+ // InMagpieOnly is whether everything a plugin at target has runs in
+ // magpie's own process, its gateway middleware, its agent and what it adds
+ // to the window, so the host has nothing of it to load.
+diff --git a/internal/plugin/agent_panel_test.go b/internal/plugin/agent_panel_test.go
+new file mode 100644
+index 0000000..babfe25
+--- /dev/null
++++ b/internal/plugin/agent_panel_test.go
+@@ -0,0 +1,24 @@
++package plugin
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestAgentPanelNeedsItsNativeAgentID(t *testing.T) {
++	dir := t.TempDir()
++	for _, file := range []string{"settings.html", "fallback.html"} {
++		if err := os.WriteFile(filepath.Join(dir, file), []byte("<!doctype html>"), 0600); err != nil {
++			t.Fatal(err)
++		}
++	}
++	pkg := `{"magpie":{"panels":[{"slot":"agent","agent":"artex","file":"settings.html"},{"slot":"agent","file":"settings.html"},{"slot":"agents","file":"fallback.html"}]}}`
++	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0600); err != nil {
++		t.Fatal(err)
++	}
++	w, _ := Window(dir)
++	if w == nil || len(w.Panels) != 2 || w.Panels[0].Agent != "artex" || w.Panels[0].Slot != "agent" || w.Panels[1].Slot != "agents" {
++		t.Fatalf("panels: %#v", w)
++	}
++}
+diff --git a/internal/plugin/page.go b/internal/plugin/page.go
+index bb960d4..56c011b 100644
+--- a/internal/plugin/page.go
++++ b/internal/plugin/page.go
+@@ -65,6 +65,7 @@ type ServiceSpec struct {
+ // part of that page, drawn by the plugin's HTML in a frame of its own.
+ type PanelSpec struct {
+ 	Slot   string // one of PanelSlots
++	Agent  string // the native agent id for an agent detail panel
+ 	Title  string // "" when it names none
+ 	Titles map[string]string
+ 	File   string // the panel's HTML, inside the plugin's folder
+@@ -98,10 +99,10 @@ const maxActions = 8
+ var PageReads = []string{"usage:summary", "usage:day", "providers:list"}
+ 
+ // PanelSlots are the places in magpie's own pages a plugin's panel can
+-// go: under the Agents page's list, at the end of the Usage page, on
+-// Settings' Plugins tab, and in a provider's editor (which tells the
+-// panel the provider's id and name).
+-var PanelSlots = []string{"agents", "usage", "settings", "provider"}
++// go: under the Agents page's list, inside one agent's Details, at the
++// end of Usage, on Settings' Plugins tab, and in a provider's editor.
++// Detail panels name their agent and receive its id and name in context.
++var PanelSlots = []string{"agents", "agent", "usage", "settings", "provider"}
+ 
+ // Replaceable are the built-in pages a plugin's page can take the place
+ // of: the pages that are built-in plugins of their own.
+@@ -157,6 +158,7 @@ func Window(target string) (w *WindowSpec, only bool) {
+ 		File      string          `json:"file"`
+ 		Icon      string          `json:"icon"`
+ 		Slot      string          `json:"slot"`
++		Agent     string          `json:"agent"`
+ 		Replaces  string          `json:"replaces"`
+ 		ID        string          `json:"id"`
+ 		Menu      string          `json:"menu"`
+@@ -203,11 +205,15 @@ func Window(target string) (w *WindowSpec, only bool) {
+ 			break
+ 		}
+ 		slot := strings.TrimSpace(pn.Slot)
++		agent := strings.TrimSpace(pn.Agent)
+ 		file, ok := htmlInside(target, pn.File)
+ 		if !ok || !slices.Contains(PanelSlots, slot) {
+ 			continue
+ 		}
+-		w.Panels = append(w.Panels, PanelSpec{Slot: slot, Title: strings.TrimSpace(pn.Title), Titles: titles(pn.Titles), File: file, Dir: filepath.Dir(file)})
++		if slot == "agent" && (agent == "" || len(agent) > 64) {
++			continue
++		}
++		w.Panels = append(w.Panels, PanelSpec{Slot: slot, Agent: agent, Title: strings.TrimSpace(pn.Title), Titles: titles(pn.Titles), File: file, Dir: filepath.Dir(file)})
+ 	}
+ 	// an action opens the plugin's page, so a plugin with none has no
+ 	// action; an id given twice is the first's
+diff --git a/internal/settings/agent_instances.go b/internal/settings/agent_instances.go
+new file mode 100644
+index 0000000..f32fa21
+--- /dev/null
++++ b/internal/settings/agent_instances.go
+@@ -0,0 +1,31 @@
++package settings
++
++import "slices"
++
++// CopyAgentVisibility seeds a newly split client from its old shared row.
++// Existing client choices, including an explicitly empty picked list, win.
++// The caller journals that this one-time import has completed.
++func CopyAgentVisibility(from, to string) error {
++	defer lockFile()()
++	s, err := loadChecked()
++	if err != nil {
++		return err
++	}
++	changed := false
++	for _, m := range []map[string][]string{s.Visible, s.HiddenModels, s.PickedModels, s.OrderedModels} {
++		if value, ok := m[from]; ok {
++			if _, exists := m[to]; !exists {
++				m[to] = append([]string{}, value...)
++				changed = true
++			}
++		}
++	}
++	if slices.Contains(s.OwnModelsHidden, from) && !slices.Contains(s.OwnModelsHidden, to) {
++		s.OwnModelsHidden = append(s.OwnModelsHidden, to)
++		changed = true
++	}
++	if !changed {
++		return nil
++	}
++	return save(s, false)
++}
