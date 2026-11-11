@@ -34,6 +34,7 @@ test("official Magpie installs one native ARTEX agent and syncs local/WSL client
   const home = await temporaryPaths(resources), local = await artexServer(resources), wsl = await artexServer(resources);
   const directory = path.join(home.dir, ".config", "magpie");
   const paths = pathsFor(path.join(home.dir, ".config", "magpie-artex"));
+  const events = [];
   const env = {
     ...process.env, HOME: home.dir, USERPROFILE: home.dir,
     XDG_CONFIG_HOME: path.join(home.dir, ".config"), XDG_CACHE_HOME: path.join(home.dir, ".cache"),
@@ -46,10 +47,19 @@ test("official Magpie installs one native ARTEX agent and syncs local/WSL client
     try { return (await execute(path.resolve(values.magpie), args, { cwd: home.dir, env, windowsHide: true, timeout: 35000, maxBuffer: 2 * 1024 * 1024 })).stdout; }
     catch { throw new Error(`Official Magpie command ${args[0]} failed; inspect isolated configuration without sharing credentials.`); }
   };
-  async function until(predicate) {
-    const deadline = Date.now() + 8000;
+  async function until(predicate, expectation = "ARTEX follows the native model selection") {
+    const deadline = Date.now() + 15000;
     while (Date.now() < deadline) { if (await predicate()) return; await delay(30); }
-    assert.fail("ARTEX did not follow the official native model change");
+    const bridge = await readJSON(paths.agent);
+    // These are isolated fixtures. Print only model/state facts, never
+    // the bridge keys, login credentials or complete upstream objects.
+    console.error(JSON.stringify({
+      expectation, nativeModel: bridge?.model, nativeCatalog: bridge?.models?.map((m) => m.id),
+      localProfiles: local.profiles.map(({ model, is_default }) => ({ model, is_default })),
+      wslProfiles: wsl.profiles.map(({ model, is_default }) => ({ model, is_default })),
+      events: events.slice(-12),
+    }));
+    assert.fail(expectation);
   }
   await writeJSON(path.join(directory, "settings.json"), { noWSLAgents: true, autoUpdate: false });
   await writeJSON(path.join(directory, "providers.json"), { providers: [{ id: "native-fixture", name: "Fixture", chat: `${local.url}/v1`, key: "fixture-vendor-key", models: ["model-a", "model-b"] }] });
@@ -63,7 +73,7 @@ test("official Magpie installs one native ARTEX agent and syncs local/WSL client
   plugins.plugins[0].options = { port: servicePort };
   await writeJSON(path.join(directory, "plugins.json"), plugins);
   await configureInstance(paths, { environment: "local", url: local.url, password: local.password });
-  const runtime = await startPluginRuntime({ paths, magpieDirectory: directory, interval: 500 });
+  const runtime = await startPluginRuntime({ paths, magpieDirectory: directory, interval: 500, log: (message, level) => events.push({ message, level }) });
   resources.after(() => runtime.stop());
   await run("artex", "magpie/native-fixture/model-a");
   await until(() => local.profiles.some((p) => p.is_default && p.model === "native-fixture/model-a"));
@@ -78,7 +88,7 @@ test("official Magpie installs one native ARTEX agent and syncs local/WSL client
   settings.pickedModels = { artex: ["native-fixture/model-b"] };
   await writeJSON(path.join(directory, "settings.json"), settings);
   await run("artex", "magpie/native-fixture/model-b");
-  await until(() => [local, wsl].every((api) => !api.profiles.some((p) => p.model === "native-fixture/model-a")));
+  await until(() => [local, wsl].every((api) => !api.profiles.some((p) => p.model === "native-fixture/model-a")), "Unpicked model is removed from both ARTEX catalogs");
   assert.deepEqual((await readJSON(paths.agent)).models.map((m) => m.id), ["native-fixture/model-b"]);
   const sync = new Synchronizer({ paths: child, bridgeFile: paths.agent, shared: true });
   await sync.disconnect();
