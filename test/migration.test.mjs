@@ -6,7 +6,7 @@ import { LegacyPluginMigration } from "../lib/registration.mjs";
 import { instancePaths, wslInstance } from "../lib/instances.mjs";
 import { readJSON, writeJSON, writeText } from "../lib/files.mjs";
 import { artexServer, selection, temporaryPaths } from "../test-support/artex.mjs";
-import { refreshNativeInstances } from "../lib/native-instances.mjs";
+import { prepareOfficialAgent, officialJournal } from "../lib/official-agent.mjs";
 
 const fixtureDistro = "Fixture-Ubuntu";
 const fixtureAgentID = wslInstance(fixtureDistro).id;
@@ -44,7 +44,7 @@ test("upgrade removes only legacy ARTEX records, preserves credentials and journ
   assert.deepEqual(await migration.migrate(paths), { removed: 0 });
 });
 
-test("upgrade adopts the existing selection through the new native WSL client", async (t) => {
+test("legacy migration reconnects through the official ARTEX row", async (t) => {
   const paths = await temporaryPaths(t), child = instancePaths(paths, fixtureDistro);
   const directory = path.join(paths.dir, "magpie"), file = path.join(directory, "plugins.json");
   await writeJSON(child.agent, selection("vendor/existing"));
@@ -53,33 +53,55 @@ test("upgrade adopts the existing selection through the new native WSL client", 
   const calls = [];
   const migration = new LegacyPluginMigration({ magpieDirectory: directory, find: async () => "fixture", runner: async (_binary, args) => {
     calls.push(args);
-    if (args[0] === fixtureAgentID) await writeJSON(child.agent, selection("vendor/existing"));
+    if (args[0] === "artex") await writeJSON(child.agent, selection("vendor/existing"));
     else await writeJSON(file, { plugins: [{ spec: "main" }] });
   } });
   assert.deepEqual(await migration.migrate(paths), { removed: 1 });
-  assert.deepEqual(calls, [["plugin", "rm", child.agentModule], [fixtureAgentID, "magpie/vendor/existing"]]);
+  assert.deepEqual(calls, [["plugin", "rm", child.agentModule], ["artex", "magpie/vendor/existing"]]);
   assert.equal((await readJSON(child.agent)).model, "vendor/existing");
   assert.equal(await readJSON(paths.agent), null);
 });
 
-test("splitting a shared WSL row adopts its bridge once, preserves authorization and exposes one native client", async (t) => {
+test("unifying old WSL clients adopts the bridge and native visibility once without touching authorization or recovery", async (t) => {
   const root = await temporaryPaths(t), child = instancePaths(root, fixtureDistro), api = await artexServer(t);
   await writeJSON(child.config, { version: 1, url: api.url, password: api.password, environment: "wsl", wsl_distro: fixtureDistro, gateway_url: "http://fixture.invalid:3425" });
   await writeJSON(child.agent, selection("vendor/old"));
   await writeJSON(child.state, { version: 1, connected: true, shared_bridge: true, profile_id: "17", previous_profile_id: "2" });
   const credentials = await readFile(child.config, "utf8");
-  await writeJSON(root.agent, selection("vendor/root"));
-  const inventory = await refreshNativeInstances(root);
-  assert.equal(inventory.includeBase, false);
-  assert.equal(inventory.instances.length, 1);
-  assert.equal(inventory.instances[0].id, fixtureAgentID);
-  assert.equal(inventory.instances[0].inherit, true);
-  assert.equal((await readJSON(child.agent)).model, "vendor/root");
+  const directory = path.join(root.dir, "magpie");
+  await writeJSON(path.join(directory, "settings.json"), { theme: "dark", pickedModels: { [fixtureAgentID]: ["vendor/old"], codex: ["fixture/keep"] }, ownModelsHidden: [fixtureAgentID], hiddenModels: { artex: ["stale/value"], codex: ["fixture/hidden"] } });
+  const stateBefore = await readFile(child.state, "utf8");
+  const result = await prepareOfficialAgent(root, { magpieDirectory: directory });
+  assert.equal(result.native_pending, true);
+  assert.equal((await readJSON(root.agent)).model, "vendor/old");
+  assert.equal((await readJSON(child.agent)).model, "vendor/old");
+  const preferences = await readJSON(path.join(directory, "settings.json"));
+  assert.deepEqual(preferences.pickedModels.artex, ["vendor/old"]);
+  assert.deepEqual(preferences.pickedModels.codex, ["fixture/keep"]);
+  assert.equal(preferences.hiddenModels.artex, undefined);
+  assert.ok(preferences.ownModelsHidden.includes("artex"));
   assert.equal((await readJSON(child.state)).profile_id, "17");
   assert.equal((await readJSON(child.state)).previous_profile_id, "2");
   await writeJSON(root.agent, selection("vendor/explicit"));
-  await refreshNativeInstances(root);
-  assert.equal((await readJSON(child.agent)).model, "vendor/root", "future root edits cannot overwrite the WSL bridge");
+  await prepareOfficialAgent(root, { magpieDirectory: directory });
+  assert.equal((await readJSON(root.agent)).model, "vendor/explicit", "migration must never overwrite a later native choice");
+  assert.equal((await readJSON(child.agent)).model, "vendor/old");
   assert.equal(await readFile(child.config, "utf8"), credentials);
+  assert.equal(await readFile(child.state, "utf8"), stateBefore);
   assert.equal(api.writes.length, 0);
+});
+
+test("official reconnection retries after a restart and a subsequent disconnect is not reimported", async (t) => {
+  const root = await temporaryPaths(t);
+  await writeJSON(root.agent, selection("fixture/existing"));
+  await writeJSON(officialJournal(root), { version: 1, complete: true, native_pending: true, model: "fixture/existing" });
+  const calls = [];
+  const migration = new LegacyPluginMigration({ find: async () => "fixture", runner: async (_binary, args) => { calls.push(args); } });
+  await migration.reconnectOfficial(root);
+  assert.deepEqual(calls, [["artex", "magpie/fixture/existing"]]);
+  await writeJSON(root.agent, {});
+  await prepareOfficialAgent(root);
+  await migration.reconnectOfficial(root);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(await readJSON(root.agent), {});
 });

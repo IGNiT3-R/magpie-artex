@@ -77,7 +77,7 @@ test("GUI WSL setup stays inside the installed plugin without generating or regi
   assert.equal(api.writes.length, 0);
 });
 
-test("WSL connection status follows its own native ARTEX selection", async (t) => {
+test("WSL connection status follows the official shared ARTEX row", async (t) => {
   const api = await artexServer(t);
   const ui = await page(t);
   const values = { environment: "wsl", wsl_distro: "Fixture", url: api.url, password: api.password };
@@ -86,8 +86,19 @@ test("WSL connection status follows its own native ARTEX selection", async (t) =
   await writeJSON(ui.paths.agent, selection("test/shared-native"));
   const child = instancePaths(ui.paths, values.wsl_distro);
   await writeJSON(child.agent, selection("test/wsl-native"));
-  assert.equal((await ui.api("state")).body.instances[0].selection, "test/wsl-native");
+  assert.equal((await ui.api("state")).body.instances[0].selection, "test/shared-native");
   assert.equal((await readJSON(ui.paths.agent)).model, "test/shared-native");
+});
+
+test("adding a second environment cannot accidentally configure the same ARTEX service twice", async (t) => {
+  const api = await artexServer(t), ui = await page(t);
+  assert.equal((await ui.api("configure", { environment: "local", url: api.url, password: api.password })).status, 200);
+  const logins = api.logins;
+  const result = await ui.api("configure", { environment: "wsl", wsl_distro: "Fixture-Ubuntu", url: api.url + "/", password: api.password });
+  assert.equal(result.status, 400);
+  assert.match(result.body.error, /已经有连接/);
+  assert.equal(api.logins, logins);
+  assert.equal(await readJSON(instancePaths(ui.paths, "Fixture-Ubuntu").config), null);
 });
 
 test("page isolation rejects missing capabilities, foreign origins, DNS rebinding and form CSRF", async (t) => {

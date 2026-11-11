@@ -1,6 +1,6 @@
 {
   "name": "magpie-agent-artex",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Add ARTEX as a native Magpie agent and make Magpie models available in ARTEX's own model pickers.",
   "author": "IGNiT3-R",
   "homepage": "https://github.com/IGNiT3-R/magpie-artex#readme",
@@ -22,7 +22,6 @@
     "bin/",
     "lib/",
     "page/",
-    "compat/",
     "README.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
@@ -52,9 +51,8 @@
   "license": "MIT",
   "magpie": {
     "agent": "./artex.agent.js",
-    "agentInstances": "~/.config/magpie-artex/agents.json",
     "panels": [
-      { "slot": "agent", "agent": "artex", "title": "Connection", "titles": { "zh": "连接设置", "zh-TW": "連線設定" }, "file": "page/agents.html" }
+      { "slot": "settings", "title": "ARTEX connections", "titles": { "zh": "ARTEX 连接设置", "zh-TW": "ARTEX 連線設定" }, "file": "page/agents.html" }
     ]
   }
 }

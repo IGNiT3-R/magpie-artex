@@ -10,7 +10,7 @@ export const agent = {
   config: "~/.config/magpie-artex/agent.json",
   model: "model",
   ua: ["artex", "norma"],
-  notice: "接入后可在 ARTEX 中选择此 Agent 可见的 Magpie 模型。首次授权请打开详情 → 设置；本机与各个 WSL 发行版分别配置。",
+  notice: "首次授权请打开 Magpie 设置 → 插件中的 ARTEX 连接设置。所有启用的本机 / WSL 连接跟随此行的模型与可见性设置。",
 };
 
 export function connect({ gateway, model, models }) {

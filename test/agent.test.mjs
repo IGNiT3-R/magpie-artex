@@ -11,7 +11,7 @@ const config = validateConfig({ version: 1, url: "http://127.0.0.1:8787/", token
 test("manifest declares an agent and a separate background entry", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.magpie.agent, "./artex.agent.js");
-  assert.equal(pkg.magpie.agentInstances, "~/.config/magpie-artex/agents.json");
+  assert.equal(pkg.magpie.agentInstances, undefined, "the package uses only public host interfaces");
   assert.equal(pkg.main, "./index.mjs");
   assert.equal(agent.id, "artex");
   assert.equal(agent.name, "ARTEX");
@@ -19,9 +19,8 @@ test("manifest declares an agent and a separate background entry", async () => {
   assert.equal(agent.dir, "~/.config/magpie-artex");
   assert.equal(agent.bin, undefined, "a server integration must not require a nonexistent local CLI");
   assert.equal(pkg.magpie.page, undefined, "settings must not add a separate sidebar page");
-  assert.equal(pkg.magpie.panels[0].slot, "agent");
-  assert.equal(pkg.magpie.panels[0].agent, "artex");
-  assert.equal(pkg.magpie.panels.length, 1, "settings belong only inside ARTEX Details");
+  assert.equal(pkg.magpie.panels[0].slot, "settings");
+  assert.equal(pkg.magpie.panels.length, 1, "use the official plugin settings slot");
   assert.ok(!pkg.magpie.panels.some((panel) => panel.slot === "agents"), "the Agents page must have no bottom settings panel");
 });
 

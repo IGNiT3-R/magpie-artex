@@ -8,9 +8,9 @@
 </head>
 <body>
 <main>
-  <header><div><span class="eyebrow">MAGPIE × ARTEX</span><h1>ARTEX 连接设置</h1><p>首次授权并接入后，直接在 ARTEX 中选择 Magpie 的模型。</p></div><button id="add" class="primary" type="button">添加实例</button></header>
+  <header><div><span class="eyebrow">MAGPIE × ARTEX</span><h1>ARTEX 连接设置</h1><p>所有启用的连接跟随 Agent 页 ARTEX 行的模型和可见性设置。</p></div><button id="add" class="primary" type="button">添加连接</button></header>
   <div id="notice" role="status" aria-live="polite" hidden></div>
-  <section aria-labelledby="instances-heading"><div class="section-heading"><h2 id="instances-heading">已连接实例</h2><button id="refresh" type="button">刷新状态</button></div><div id="instances"><p class="empty">正在读取连接…</p></div></section>
+  <section aria-labelledby="instances-heading"><div class="section-heading"><h2 id="instances-heading">已连接实例</h2><button id="refresh" type="button">刷新状态</button></div><p class="detail">在 Agent 页的 ARTEX 行选择模型、勾选可见模型；所有启用的连接会跟随。暂停只影响对应连接。</p><div id="instances"><p class="empty">正在读取连接…</p></div></section>
   <section id="editor" aria-labelledby="editor-heading" hidden>
     <div class="section-heading"><h2 id="editor-heading">添加 ARTEX 实例</h2><button id="cancel" type="button">取消</button></div>
     <form id="connection">

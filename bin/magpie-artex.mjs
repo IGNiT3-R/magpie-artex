@@ -142,17 +142,17 @@ async function main() {
   if (positionals.length !== 1) throw new Error("一次只能执行一个命令。 ");
   const root = pathsFor(values["data-dir"]);
   const paths = instancePaths(root, values.wsl);
-  const sync = new Synchronizer({ paths });
+  const sync = new Synchronizer({ paths, bridgeFile: root.agent, shared: true });
   let result;
   switch (command) {
     case "setup": result = await setup(paths, values); break;
-    case "status": result = await status(paths, paths.agent); break;
+    case "status": result = await status(paths, root.agent); break;
     case "sync": result = await sync.sync(); break;
     case "disconnect": {
       result = await sync.disconnect();
       break;
     }
-    case "doctor": result = await doctor(paths, values, paths.agent); break;
+    case "doctor": result = await doctor(paths, values, root.agent); break;
     case "wsl": result = { distros: await listRunningWSL(), message: "正在运行的 WSL 发行版：" }; break;
     case "instances": {
       const instances = [];

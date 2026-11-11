@@ -39,3 +39,27 @@ jobs:
       - run: npm test
       - run: npm run check:public
       - run: npm run check:package
+  official-agent:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Test against verified official Magpie and Bun releases
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $magpie = Join-Path $env:RUNNER_TEMP 'magpie-cli-windows-amd64.exe'
+          Invoke-WebRequest 'https://github.com/yetone/magpie/releases/download/v0.1.3697/magpie-cli-windows-amd64.exe' -OutFile $magpie
+          if ((Get-FileHash $magpie -Algorithm SHA256).Hash -ne '4588d7496852a6fd7c8c361890d3172dbcd3742680b6f5f828feeec280f0f49d') { throw 'Magpie checksum mismatch' }
+          $archive = Join-Path $env:RUNNER_TEMP 'bun.zip'
+          Invoke-WebRequest 'https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64-baseline.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '0f20ce6674d4f2dbcc8c5d59fdf99f7ba45f8c3b367e0f5781cbfa30a1c78d99') { throw 'Bun checksum mismatch' }
+          $directory = Join-Path $env:RUNNER_TEMP 'artex-bun'
+          Expand-Archive $archive -DestinationPath $directory
+          $bun = (Get-ChildItem $directory -Recurse -Filter bun.exe | Select-Object -First 1).FullName
+          npm run test:agent -- --magpie $magpie --bun $bun
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

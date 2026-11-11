@@ -25,6 +25,7 @@ state.json
 status.json
 agents.json
 legacy-upgrade.json
+official-agent.json
 sync.lock*
 *.key
 *.pem

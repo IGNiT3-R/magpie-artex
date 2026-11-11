@@ -18,7 +18,7 @@ for (const [origin, protocol, hostname] of [
       location: { href, origin, protocol, hostname, replace: (value) => navigations.push(value) },
       document: { getElementById: () => ({}) },
     });
-    assert.deepEqual(navigations, [`http://127.0.0.1:3480/#agents&agent=artex-wsl-fixture&bootstrap=${encodeURIComponent(href)}`]);
+    assert.deepEqual(navigations, [`http://127.0.0.1:3480/#agents&bootstrap=${encodeURIComponent(href)}`]);
   });
 }
 

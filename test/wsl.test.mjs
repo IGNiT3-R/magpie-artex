@@ -226,7 +226,7 @@ test("doctor honors manual gateway and key options without logging in or saving 
   assert.equal(await readJSON(instancePaths(root, "Offline-Fixture").config), null);
 });
 
-test("one plugin isolates local and multiple WSL Agents, keys, selections and restore journals", async (t) => {
+test("one official Agent feeds local and multiple WSL connections with isolated credentials and restoration", async (t) => {
   const cleanup = [];
   const resources = { after: (fn) => cleanup.push(fn) };
   t.after(async () => { for (const fn of cleanup.reverse()) await fn(); });
@@ -250,17 +250,19 @@ test("one plugin isolates local and multiple WSL Agents, keys, selections and re
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline && (!localAPI.profiles[1]?.is_default || !wslAPI.profiles[1]?.is_default || !otherAPI.profiles[1]?.is_default)) await delay(20);
   assert.equal(localAPI.profiles[1].model, "local/model");
-  assert.equal(wslAPI.profiles[1].model, "wsl/model");
-  assert.equal(otherAPI.profiles[1].model, "other/model");
+  assert.equal(wslAPI.profiles[1].model, "local/model");
+  assert.equal(otherAPI.profiles[1].model, "local/model");
   assert.equal(localAPI.profiles[1].api_key, "magpie-test-artex");
-  assert.equal(wslAPI.profiles[1].api_key, `${wslKey}-${wslInstance("Ubuntu-24.04").id}`);
-  assert.equal(otherAPI.profiles[1].api_key, `${wslKey}-${wslInstance("Other").id}`);
+  assert.equal(wslAPI.profiles[1].api_key, `${wslKey}-artex`);
+  assert.equal(otherAPI.profiles[1].api_key, `${wslKey}-artex`);
   const wslState = await readJSON(child.state);
   assert.equal(wslState.artex_url, wslAPI.url);
   assert.equal((await readJSON(root.state)).artex_url, localAPI.url);
   await runtime.stop();
-  await new Synchronizer({ paths: child, connectionResolver: resolver(fake) }).disconnect();
+  await new Synchronizer({ paths: child, bridgeFile: root.agent, shared: true, connectionResolver: resolver(fake) }).disconnect();
   assert.equal(wslAPI.profiles[0].is_default, true);
   assert.equal(localAPI.profiles[1].is_default, true);
   assert.equal(otherAPI.profiles[1].is_default, true);
+  assert.equal((await readJSON(root.agent)).model, "local/model");
+  assert.equal((await readJSON(child.config)).enabled, false);
 });

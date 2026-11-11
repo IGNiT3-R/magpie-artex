@@ -4,7 +4,6 @@
   const form = $("connection");
   const fragment = new URLSearchParams(location.hash.slice(1));
   const embedded = fragment.has("agents");
-  const agentID = embedded ? fragment.get("agent") : null;
   const bootstrap = artexReconnectURL(fragment.get("bootstrap"), location.href);
   let recovering = false;
   function reconnect() {
@@ -18,7 +17,7 @@
   if (embedded) {
     document.documentElement.classList.add("embedded-page");
     document.body.classList.add("embedded");
-    $("instances-heading").textContent = "连接信息";
+    $("instances-heading").textContent = "ARTEX 连接";
     $("add").textContent = "添加其他连接";
     $("instances-heading").parentElement.append($("add"));
   }
@@ -72,7 +71,7 @@
   function render() {
     const box = $("instances"); box.replaceChildren();
     if (!instances.length) {
-      box.append(node("p", embedded ? "添加本机或 WSL 连接并保存授权，然后在相应的 ARTEX 行接入，即可在 ARTEX 中选择 Magpie 模型。" : "还没有连接 ARTEX。点击“添加实例”，填写地址和登录信息。", "empty"));
+      box.append(node("p", "添加本机或 WSL 连接并保存授权，然后在 Agent 页的 ARTEX 行接入或选择模型。所有启用的连接跟随这一行的模型与可见性设置。", "empty"));
       if (embedded) $("add").textContent = "添加连接";
       return;
     }
@@ -81,22 +80,23 @@
       const head = node("div", undefined, "card-head");
       const status = item.last_sync?.status || "disconnected";
       const ready = status === "inactive" && item.last_sync?.catalog_models;
-      const badge = node("span", ready ? "模型已就绪" : stateLabels[status] || status, `badge${status === "error" ? " error" : status === "inactive" && !ready ? " warning" : ""}`);
+      const badge = node("span", item.enabled === false ? "已暂停" : ready ? "模型已就绪" : stateLabels[status] || status, `badge${status === "error" ? " error" : status === "inactive" && !ready ? " warning" : ""}`);
       head.append(node("h3", item.name), badge); card.append(head, node("p", item.url, "address"));
-      if (!embedded) card.append(node("div", item.selection ? `所选模型：${item.selection}` : "请在 Magpie → Agents 为此实例选择模型。", "model"));
+      card.append(node("div", item.selection ? `Magpie 所选模型：${item.selection}` : "请在 Agent 页的 ARTEX 行选择模型。", "detail"));
       if (item.last_sync?.message) card.append(node("p", item.last_sync.message, "detail"));
       if (item.last_sync?.gateway_url) card.append(node("p", `ARTEX → Magpie：${item.last_sync.gateway_url} · ${item.last_sync.networking_mode}`, "detail"));
       if (item.last_sync?.updated_at) card.append(node("p", `状态更新：${new Date(item.last_sync.updated_at).toLocaleString()}`, "detail"));
       const actions = node("div", undefined, "actions");
       const edit = node("button", "编辑连接"); edit.type = "button"; edit.addEventListener("click", () => openEditor(item)); actions.append(edit);
       actions.append(operationButton("检查连接", "check", item));
+      actions.append(operationButton(item.enabled === false ? "恢复同步" : "暂停同步", item.enabled === false ? "resume" : "disconnect", item));
       card.append(actions); box.append(card);
     }
     requestAnimationFrame(reportSize);
   }
   async function refresh() {
     const data = await api("state");
-    instances = agentID ? data.instances.filter((item) => item.id === agentID) : data.instances;
+    instances = data.instances;
     const next = JSON.stringify(instances);
     if (next !== snapshot) { snapshot = next; render(); }
   }

@@ -11,7 +11,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const publicRoots = new Set([".github", ".githooks", "bin", "compat", "lib", "page", "scripts", "test", "test-support"]);
 const publicFiles = new Set([".gitattributes", ".gitignore", "package.json", "README.md", "CONTRIBUTING.md", "CHANGELOG.md", "SECURITY.md", "LICENSE", "artex.agent.js", "index.mjs"]);
 const excludedDirectory = /^(?:\.git|\.config|\.playwright-cli|node_modules|output|coverage|instances|backups?|logs?)$/i;
-const excludedFile = /^(?:\.env(?:\..*)?|(?:config|agent|agents|state|status|legacy-upgrade)\.json|sync\.lock.*|id_(?:rsa|ed25519)|.*-key)$/i;
+const excludedFile = /^(?:\.env(?:\..*)?|(?:config|agent|agents|state|status|legacy-upgrade|official-agent)\.json|sync\.lock.*|id_(?:rsa|ed25519)|.*-key)$/i;
 const excludedExtension = /\.(?:tgz|zip|7z|tar|gz|exe|dll|db(?:-.*)?|sqlite.*|log|tmp|pending|bak|backup|key|pem|p12|pfx)$/i;
 const rules = [
   ["private-key", /-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----/],

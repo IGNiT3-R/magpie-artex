@@ -108,9 +108,8 @@ test("actual Magpie Bun host loads ARTEX as an agent runtime and applies/updates
     environment: "wsl", wsl_distro: "Fixture-Ubuntu",
     gateway_url: "http://fixture-gateway.invalid:3425", gateway_key_file: keyFile,
   });
-  await writeJSON(childPaths.agent, selection("test/wsl-model"));
   await until(async () => (await readJSON(childPaths.status))?.status === "synced");
-  assert.equal(wslAPI.profiles[1].model, "test/wsl-model");
+  assert.equal(wslAPI.profiles[1].model, "test/model-a");
   assert.equal(wslAPI.profiles[1].api_key, "sk-magpie-fixture-key");
   assert.equal(api.profiles[1].model, "test/model-a");
 
@@ -125,8 +124,6 @@ test("actual Magpie Bun host loads ARTEX as an agent runtime and applies/updates
   assert.deepEqual(replies.get(2).result, []);
   await writeJSON(paths.agent, {});
   await until(() => api.profiles[0].is_default);
-  assert.equal(wslAPI.profiles[1].is_default, true, "disconnecting Windows leaves the WSL Agent connected");
-  await writeJSON(childPaths.agent, {});
   await until(() => wslAPI.profiles[0].is_default);
   const transcript = JSON.stringify(messages) + stderr;
   for (const secret of [api.password, api.token, "magpie-test-artex", "original-secret-key", "sk-magpie-fixture-key"]) assert.ok(!transcript.includes(secret), "credentials must not appear in host logs");

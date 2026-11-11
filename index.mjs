@@ -50,7 +50,8 @@ export default async function ArtexPlugin(input, options = {}) {
     // Removing an old record can restart this host. Do it after the new
     // service is ready, so its page can reconnect after that restart.
     const migration = setTimeout(() => {
-      void new LegacyPluginMigration({ magpieDirectory: input?.directory, executable: options.magpieExecutable }).migrate(pathsFor())
+      const upgrader = new LegacyPluginMigration({ magpieDirectory: input?.directory, executable: options.magpieExecutable });
+      void upgrader.migrate(pathsFor()).then(() => upgrader.reconnectOfficial(pathsFor()))
         .catch((error) => console.error(`[magpie-artex] ${error.message}`));
     }, 1000);
     migration.unref();
